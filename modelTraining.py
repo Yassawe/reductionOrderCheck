@@ -1,6 +1,5 @@
 """
 all research code is always a mess, i didn't care about clean code or anything like that here
-
 """
 
 import os
@@ -47,6 +46,8 @@ def main():
                         help='number of gpus per node')
     parser.add_argument('--epochs', default=3, type=int, metavar='N',
                         help='number of total epochs to run')
+    
+    parser.add_argument('--datatype', default='F16', type=str)
 
     parser.add_argument('--lr', default = 1e-3, type=float)
 
@@ -77,32 +78,42 @@ def main():
 
 
 def train(gpu, train_dataset, test_dataset, args):
+    #DISTRIBUTED
     torch.cuda.set_device(gpu)
     dist.init_process_group(backend='nccl', world_size=args.gpus, rank=gpu)
 
+
+    #SETUPS
     setrandom(20214229)
-    dt = "F16"
-    filename = "trace/"+str(args.rings) + "RINGS_" + dt
+    filename = "trace/"+str(args.rings) + "RINGS_" + args.datatype
     ext = ".csv"
 
 
-    
+    #MODEL AND DATATYPE 
     model = torchvision.models.resnet50(pretrained=False)
-    model.half()
+
+    if args.datatype=="F16":
+        model.half()
+    elif args.datatype=="BF16":
+        model.bfloat16()
+
     for layer in model.modules():
         if isinstance(layer, nn.BatchNorm2d): #for numerical stability reasons, otherwise occasional NaN
             layer.float()
+
     model.cuda(gpu)
     model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
 
+
+    #HYPERPARAMETERS
     batch_size = 128
     criterion = nn.CrossEntropyLoss().cuda(gpu)
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-3)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
  
 
     
-                                               
+    #DATASETS                           
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=args.gpus, rank=gpu)
                                                                     
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
@@ -116,18 +127,35 @@ def train(gpu, train_dataset, test_dataset, args):
                                               shuffle=False,
                                               pin_memory=True)
 
-    start = datetime.now()
+    train_eval_set = torch.utils.data.Subset(train_dataset, [random.randint(0,len(train_dataset)-1) for i in range(len(test_dataset))])
+
+    train_loader_evaluation = torch.utils.data.DataLoader(dataset=train_eval_set,
+                                                    batch_size=batch_size,
+                                                    shuffle=True,
+                                                    pin_memory=True
+                                                    )
+
     total_step = len(train_loader)
-    
+
     if gpu==0:
         with open(filename+ext, "w+") as f:
             print("Loss", file=f)
+        open(filename+"_accuracies.txt", "w+").close()
 
     model.train()
+
     for epoch in range(args.epochs):
         for i, (images, labels) in enumerate(train_loader):
-            images = images.cuda(non_blocking=True).half()
-            labels = labels.cuda(non_blocking=True)
+
+            if args.datatype=="F16":
+                images = images.cuda(gpu, non_blocking=True).half()
+            elif args.datatype=="BF16":
+                images = images.cuda(gpu, non_blocking=True).bfloat16()
+            else:
+                images = images.cuda(gpu, non_blocking=True)
+
+            labels = labels.cuda(gpu, non_blocking=True)
+
             # Forward pass
             outputs = model(images)
             loss = criterion(outputs, labels)
@@ -144,27 +172,34 @@ def train(gpu, train_dataset, test_dataset, args):
                     print("{}".format(loss.item()), file=f)
         scheduler.step()
 
-    if gpu == 0:
-        print("Training complete in: " + str(datetime.now() - start))
-    
-    if gpu == 0:
-        model.eval()
-        # evaluating on the test set
-        with torch.no_grad():
-            correct = 0
-            total = 0
-            for images, labels in test_loader:
-                images = images.cuda(non_blocking=True).half()
-                labels = labels.cuda(non_blocking=True)
-                outputs = model(images)
-                _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
+        if gpu==0 and epoch%50==0:
+            evaluation(model, gpu, epoch+1, test_loader, filename, "Test set", args)
+            evaluation(model, gpu, epoch+1, train_loader_evaluation, filename, "Train set", args)
 
-            test_accuracy = 100 * correct / total
-        
-        with open(filename+"_accuracies.txt", "w+") as f:
-            print("Test set accuracy = {}%".format(test_accuracy), file=f)  
+
+
+def evaluation(model, gpu, epoch, dataloader, filename, evalname, args):
+    model.eval()
+    with torch.no_grad():
+        correct = 0
+        total = 0
+        for images, labels in dataloader:
+            if args.datatype=="F16":
+                images = images.cuda(gpu, non_blocking=True).half()
+            elif args.datatype=="BF16":
+                images = images.cuda(gpu, non_blocking=True).bfloat16()
+            else:
+                images = images.cuda(gpu, non_blocking=True)
+
+            labels = labels.cuda(gpu, non_blocking=True)
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+        accuracy = 100 * correct / total
+    model.train()
+    with open(filename+"_accuracies.txt", "a+") as f:
+        print("Epoch {}. {} accuracy = {}%".format(epoch, evalname, accuracy), file=f)  
 
 if __name__ == '__main__':
     main()
