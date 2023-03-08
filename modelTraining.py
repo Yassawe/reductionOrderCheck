@@ -87,7 +87,7 @@ def train(gpu, train_dataset, test_dataset, args):
 
 
     
-    model = torchvision.models.resnet50(pretrained=True)
+    model = torchvision.models.resnet50(pretrained=False)
     model.half()
     for layer in model.modules():
         if isinstance(layer, nn.BatchNorm2d): #for numerical stability reasons, otherwise occasional NaN
@@ -97,7 +97,7 @@ def train(gpu, train_dataset, test_dataset, args):
 
     batch_size = 128
     criterion = nn.CrossEntropyLoss().cuda(gpu)
-    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
  
 
@@ -154,7 +154,7 @@ def train(gpu, train_dataset, test_dataset, args):
             correct = 0
             total = 0
             for images, labels in test_loader:
-                images = images.cuda(non_blocking=True)
+                images = images.cuda(non_blocking=True).half()
                 labels = labels.cuda(non_blocking=True)
                 outputs = model(images)
                 _, predicted = torch.max(outputs.data, 1)
@@ -163,7 +163,7 @@ def train(gpu, train_dataset, test_dataset, args):
 
             test_accuracy = 100 * correct / total
         
-        with open(filename+"_accuracies.txt", "a+") as f:
+        with open(filename+"_accuracies.txt", "w+") as f:
             print("Test set accuracy = {}%".format(test_accuracy), file=f)  
 
 if __name__ == '__main__':
