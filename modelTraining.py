@@ -3,14 +3,12 @@ all research code is always a mess, i didn't care about clean code or anything l
 
 """
 
-
-
 import os
 from datetime import datetime
 import argparse
 import torch.multiprocessing as mp
 import torchvision
-import torchvision.transforms as T
+import torchvision.transforms as transforms
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -19,17 +17,31 @@ import numpy as np
 import pandas as pd
 
 
-train_transform = T.Compose([
-    T.Resize(224),
-    T.RandomHorizontalFlip(p=.40),
-    T.RandomRotation(30),
-    T.ToTensor(),
-    T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
 
-test_transform = T.Compose([
-    T.Resize(224),
-    T.ToTensor(),
-    T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+train_transform = transforms.Compose([
+    transforms.RandomCrop(32, padding=4),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+])
+
+test_transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+])
+
+
+# train_transform = T.Compose([
+#     T.Resize(224),
+#     T.RandomHorizontalFlip(p=.40),
+#     T.RandomRotation(30),
+#     T.ToTensor(),
+#     T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+
+# test_transform = T.Compose([
+#     T.Resize(224),
+#     T.ToTensor(),
+#     T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
 
 
 def setrandom(seed):
@@ -55,7 +67,7 @@ def main():
 
     args = parser.parse_args()
     os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '8008'
+    os.environ['MASTER_PORT'] = '1024'
 
     os.environ['NCCL_ALGO'] = 'Ring'
     os.environ['NCCL_MAX_NCHANNELS'] = str(args.rings)
@@ -80,18 +92,19 @@ def main():
 def train(gpu, train_dataset, test_dataset, args):
 
     setrandom(20214229)
-    dt = "BF16"
+    dt = "F16"
     filename = "trace/"+str(args.rings) + "RINGS_" + dt
     ext = ".csv"
 
     dist.init_process_group(backend='nccl', world_size=args.gpus, rank=gpu)
     
 
-    model = torchvision.models.resnet152(pretrained=False)
+    model = torchvision.models.resnet50(pretrained=True)
 
-    model.bfloat16()
+    model.half()
+    
     for layer in model.modules():
-        if isinstance(layer, nn.BatchNorm2d):
+        if isinstance(layer, nn.BatchNorm2d): #for numerical stability reasons, otherwise occasional NaN
             layer.float()
 
 
@@ -99,14 +112,13 @@ def train(gpu, train_dataset, test_dataset, args):
 
     model.cuda(gpu)
 
-    batch_size = 32
+    batch_size = 128
 
     criterion = nn.CrossEntropyLoss().cuda(gpu)
 
-    optimizer = torch.optim.SGD(model.parameters(), 1e-4, momentum=0.9)
-    LRSched = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
-
-    # optimizer = torch.optim.Adam(model.parameters(), 1e-4)
+    optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.9, weight_decay=5e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
+ 
 
     model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
                                                
@@ -142,7 +154,7 @@ def train(gpu, train_dataset, test_dataset, args):
     for epoch in range(args.epochs):
         for i, (images, labels) in enumerate(train_loader):
             # with torch.autocast(device_type='cuda', dtype=torch.float16):
-            images = images.cuda(non_blocking=True).bfloat16()
+            images = images.cuda(non_blocking=True)
             labels = labels.cuda(non_blocking=True)
             # Forward pass
             outputs = model(images)
@@ -170,7 +182,7 @@ def train(gpu, train_dataset, test_dataset, args):
             correct = 0
             total = 0
             for images, labels in test_loader:
-                images = images.cuda(non_blocking=True).bfloat16()
+                images = images.cuda(non_blocking=True)
                 labels = labels.cuda(non_blocking=True)
                 outputs = model(images)
                 _, predicted = torch.max(outputs.data, 1)
@@ -194,11 +206,7 @@ def train(gpu, train_dataset, test_dataset, args):
         #     train_accuracy = 100 * correct / total
         
         with open(filename+"_accuracies.txt", "a+") as f:
-            print("Training set accuracy = {}%".format(train_accuracy), file=f)
             print("Test set accuracy = {}%".format(test_accuracy), file=f)  
-
-        model.train()
-
 
 if __name__ == '__main__':
     main()
