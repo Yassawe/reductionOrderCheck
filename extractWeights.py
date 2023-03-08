@@ -1,6 +1,9 @@
 """
 THE PROBLEM: I CANNOT ACCESS WEIGHTS BEFORE THEY ARE ALREADY REDUCED, AT WHICH POINT PARAMS IN ALL INSTANCES OF THE MODEL ARE THE SAME
 
+useless code, does absolutely nothing
+
+
 """
 import os
 from datetime import datetime
