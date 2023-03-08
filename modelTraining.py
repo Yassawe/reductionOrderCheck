@@ -142,7 +142,7 @@ def train(gpu, train_dataset, test_dataset, args):
                                                                          loss.item()))
                 with open(filename+ext, "a+") as f:
                     print("{}".format(loss.item()), file=f)
-        LRSched.step()
+        scheduler.step()
 
     if gpu == 0:
         print("Training complete in: " + str(datetime.now() - start))
