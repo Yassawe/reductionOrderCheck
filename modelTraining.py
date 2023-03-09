@@ -92,9 +92,11 @@ def train(gpu, train_dataset, test_dataset, args):
     #MODEL AND DATATYPE 
     model = torchvision.models.resnet50(pretrained=False)
 
+    #default is float32
+    
     if args.datatype=="F16":
         model.half()
-    elif args.datatype=="BF16":
+    elif args.datatype=="BF16": 
         model.bfloat16()
 
     for layer in model.modules():
@@ -108,7 +110,7 @@ def train(gpu, train_dataset, test_dataset, args):
     #HYPERPARAMETERS
     batch_size = 128
     criterion = nn.CrossEntropyLoss().cuda(gpu)
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-2)
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1.5e-2)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
  
 
@@ -174,7 +176,7 @@ def train(gpu, train_dataset, test_dataset, args):
 
         if gpu==0 and epoch%50==0:
             evaluation(model, gpu, epoch+1, test_loader, filename, "Test set", args)
-            evaluation(model, gpu, epoch+1, train_loader_evaluation, filename, "Train set", args)
+            evaluation(model, gpu, epoch+1, train_loader_evaluation, filename,"Train set", args)
 
 
 
